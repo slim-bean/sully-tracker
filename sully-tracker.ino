@@ -1,8 +1,7 @@
-#include <ArduinoBearSSL.h>
 #include "config.h"
 #include "certificates.h"
 #include <PromLokiTransport.h>
-#include <Loki.h>
+#include <GrafanaLoki.h>
 #include <Arduino_MKRGPS.h>
 #include <avr/dtostrf.h>
 
@@ -15,14 +14,13 @@ LokiClient client(transport);
 
 // lat=xx.xxxxx lon=xx.xxxxx spd=xx.xx
 LokiStream loc(5, 50, "{job=\"sully\",type=\"loc\"}");  // 50*5+28 = 278
-LokiStream logger(2, 100, "{job=\"sully\",type=\"log\"}"); // 100*2+28 =228
+LokiStream logger(5, 100, "{job=\"sully\",type=\"log\"}"); // 100*3+28 =328
 // bat=x.xx
 LokiStream battery(1, 20, "{job=\"sully\",type=\"batt\"}"); // 20*1+29 = 50
 LokiStreams streams(3, 1024);
 
 uint16_t ticker = 0;
 uint8_t loopCounter = 0;
-uint8_t posCounter = 0;
 float batt[5];
 float battAvg;
 uint8_t battCounter = 0;
@@ -35,13 +33,22 @@ float speed;
 void setup() {
     Serial.begin(115200);
     //Serial.begin(9600);
-    // while (!Serial)
-    //     delay(10); // will pause Zero, Leonardo, etc until serial console opens
+
+    // Wait 5s for serial connection or continue without it
+    // some boards like the esp32 will run whether or not the 
+    // serial port is connected, others like the MKR boards will wait
+    // for ever if you don't break the loop.
+    uint8_t serialTimeout;
+    while (!Serial && serialTimeout < 50) {
+        delay(100);
+        serialTimeout++;
+    }
+
 
     Serial.println("Running Setup");
 
     transport.setUseTls(true);
-    transport.setCerts(TAs, TAs_NUM);
+    transport.setCerts(grafanaCert, strlen(grafanaCert));
     transport.setApn(APN);
     transport.setApnLogin(APN_LOGIN);
     transport.setApnPass(APN_PASS);
@@ -84,23 +91,23 @@ void loop() {
     if (ticker % 2000 == 0) {
         uint64_t time;
         time = client.getTimeNanos();
-        if (loopCounter < 5) {
-            char lat[10];
-            char lon[10];
-            char spd[10];
-            dtostrf(latitude, 8, 5, lat);
-            dtostrf(longitude, 8, 5, lon);
-            dtostrf(speed, 5, 2, spd);
-            char str1[50];
-            snprintf(str1, 50, "lat=%s lon=%s spd=%s", lat, lon, spd);
-            Serial.println(str1);
-            if (!loc.addEntry(time, str1, strlen(str1))) {
-                Serial.println(loc.errmsg);
-            }
 
-            loopCounter++;
+        char lat[10];
+        char lon[10];
+        char spd[10];
+        dtostrf(latitude, 8, 5, lat);
+        dtostrf(longitude, 8, 5, lon);
+        dtostrf(speed, 5, 2, spd);
+        char str1[50];
+        snprintf(str1, 50, "lat=%s lon=%s spd=%s", lat, lon, spd);
+        Serial.println(str1);
+        if (!loc.addEntry(time, str1, strlen(str1))) {
+            Serial.println(loc.errmsg);
         }
-        else {
+
+        loopCounter++;
+
+        if (loopCounter >= 5) {
 
             //Read battery voltage
             int sensorValue = analogRead(ADC_BATTERY);
@@ -126,14 +133,13 @@ void loop() {
                 battCounter++;
             }
 
-            // Send our data
-            if (posCounter == 0) {
-                char str1[100];
-                snprintf(str1, 100, "No GPS Data");
-                if (!logger.addEntry(time, str1, strlen(str1))) {
-                    Serial.println(logger.errmsg);
-                }
+            char str1[100];
+            snprintf(str1, 100, "tCons=%d cCons=%d", transport.getConnectCount(), client.getConnectCount());
+            if (!logger.addEntry(time, str1, strlen(str1))) {
+                Serial.println(logger.errmsg);
             }
+
+
             LokiClient::SendResult res = client.send(streams);
             if (res != LokiClient::SendResult::SUCCESS) {
                 //Failed to send
@@ -142,8 +148,8 @@ void loop() {
                     Serial.println("Failed to send with a 400 error that can't be retried");
                     loc.resetEntries();
                     battery.resetEntries();
+                    logger.resetEntries();
                     loopCounter = 0;
-                    posCounter = 0;
                 }
                 else {
                     char str1[100];
@@ -173,7 +179,6 @@ void loop() {
                 battery.resetEntries();
                 logger.resetEntries();
                 loopCounter = 0;
-                posCounter = 0;
             }
         }
     }
